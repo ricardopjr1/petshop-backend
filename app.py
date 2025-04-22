@@ -57,7 +57,7 @@ def get_required_role_for_service(service_name: str) -> str | None:
     return 'Banhista'
 
 
-@app.route('petshop-backend-nj7w-1gvlbeknz-ricardopjr1s-projects.vercel.app/api/horarios-disponiveis', methods=['GET'])
+@app.route('/api/horarios-disponiveis', methods=['GET'])
 def get_available_slots():
     try:
         app.logger.info("Recebida requisição para /api/horarios-disponiveis")
