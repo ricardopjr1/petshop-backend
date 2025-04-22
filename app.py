@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 from supabase import create_client, Client
 from datetime import datetime, time, timedelta, date
 from flask_cors import CORS
-from typing import List, Tuple, Dict, Any, Set
+from typing import List, Tuple, Dict, Any
 import logging
 
 load_dotenv()
@@ -33,13 +33,9 @@ DIAS_SEMANA_PT = {
     6: 'Domingo'
 }
 
-ROLE_HIERARCHY = {
-    'Banhista': 1,
-    'Groomer': 2,
-}
-DEFAULT_ROLE_LEVEL = 0
 
 def parse_time(time_str: str) -> time | None:
+    """Converte string de hora (HH:MM:SS ou HH:MM) para objeto time."""
     if not time_str: return None
     try:
         return datetime.strptime(time_str, '%H:%M:%S').time()
@@ -51,10 +47,12 @@ def parse_time(time_str: str) -> time | None:
             return None
 
 def combine_date_time(data_obj: date, tempo_obj: time) -> datetime | None:
+    """Combina um objeto date e um objeto time em um objeto datetime."""
     if not data_obj or not tempo_obj: return None
     return datetime.combine(data_obj, tempo_obj)
 
 def get_required_role_for_service(service_name: str) -> str | None:
+    """Determina a função necessária para realizar um serviço com base no nome."""
     if not service_name: return None
     service_name_lower = service_name.lower()
     if 'tosa' in service_name_lower:
@@ -64,51 +62,20 @@ def get_required_role_for_service(service_name: str) -> str | None:
     app.logger.warning(f"Não foi possível determinar a função para o serviço '{service_name}'. Assumindo 'Banhista'.")
     return 'Banhista'
 
-def get_highest_required_role(roles: Set[str]) -> str | None:
-    if not roles:
-        return None
-
-    highest_role = None
-    max_level = -1
-
-    for role in roles:
-        level = ROLE_HIERARCHY.get(role, DEFAULT_ROLE_LEVEL)
-        if level > max_level:
-            max_level = level
-            highest_role = role
-        elif highest_role is None:
-            highest_role = role
-
-    if highest_role is None and roles:
-         first_role = next(iter(roles))
-         app.logger.warning(f"Nenhuma das funções {roles} está na hierarquia definida. Usando a primeira: {first_role}")
-         return first_role
-
-    return highest_role
-
 
 @app.route('/api/horarios-disponiveis', methods=['GET'])
 def get_available_slots():
+    """Busca e retorna os horários disponíveis para um serviço em uma data específica."""
     try:
         app.logger.info("Recebida requisição para /api/horarios-disponiveis")
 
         data_str = request.args.get('data')
-        servico_ids_str_list = request.args.getlist('servicoIds')
+        servico_id = request.args.get('servicoId')
         empresa_id = request.args.get('empresaId')
 
-        if not data_str or not servico_ids_str_list or not empresa_id:
+        if not data_str or not servico_id or not empresa_id:
             app.logger.error("Erro: Parâmetros ausentes na requisição.")
-            return jsonify({"message": "Parâmetros 'data', 'servicoIds' (um ou mais) e 'empresaId' são obrigatórios."}), 400
-
-        try:
-            servico_ids = [int(sid) for sid in servico_ids_str_list]
-            if not servico_ids:
-                 raise ValueError("Lista de servicoIds não pode ser vazia.")
-        except ValueError:
-            app.logger.error(f"Erro: 'servicoIds' contém valores inválidos: {servico_ids_str_list}.")
-            return jsonify({"message": "'servicoIds' deve conter apenas IDs numéricos válidos."}), 400
-
-        app.logger.info(f"IDs de Serviço recebidos: {servico_ids}")
+            return jsonify({"message": "Parâmetros 'data', 'servicoId' e 'empresaId' são obrigatórios."}), 400
 
         try:
             selected_date = datetime.strptime(data_str, '%Y-%m-%d').date()
@@ -120,7 +87,7 @@ def get_available_slots():
              app.logger.warning(f"Tentativa de agendamento para data passada: {selected_date}")
              return jsonify({"message": "Não é possível agendar para datas passadas."}), 400
 
-        app.logger.info(f"Buscando horários para Empresa: {empresa_id}, Data: {selected_date}, Serviços: {servico_ids}")
+        app.logger.info(f"Buscando horários para Empresa: {empresa_id}, Data: {selected_date}, Serviço: {servico_id}")
 
         dia_semana_num = selected_date.weekday()
         dia_semana_nome = DIAS_SEMANA_PT.get(dia_semana_num)
@@ -156,67 +123,47 @@ def get_available_slots():
              app.logger.error(f"Nenhum intervalo de funcionamento VÁLIDO encontrado para {dia_semana_nome} na empresa {empresa_id} após processamento.")
              return jsonify({"message": f"Erro ao processar horários de funcionamento para {dia_semana_nome}."}), 500
 
-        response_servicos = supabase.table('servicos')\
-            .select('id, tempo_servico, nome')\
+        response = supabase.table('servicos')\
+            .select('tempo_servico, nome')\
+            .eq('id', servico_id)\
             .eq('empresa_id', empresa_id)\
-            .in_('id', servico_ids)\
+            .maybe_single()\
             .execute()
 
-        if not response_servicos.data:
-            app.logger.warning(f"Nenhum dos serviços com IDs {servico_ids} foi encontrado para a empresa {empresa_id}.")
-            return jsonify({"message": "Um ou mais serviços selecionados não foram encontrados."}), 404
+        if not response.data:
+            app.logger.warning(f"Serviço com ID {servico_id} não encontrado para a empresa {empresa_id}.")
+            return jsonify({"message": "Serviço não encontrado."}), 404
 
-        found_ids = {s['id'] for s in response_servicos.data}
-        requested_ids = set(servico_ids)
-        if found_ids != requested_ids:
-             missing_ids = requested_ids - found_ids
-             app.logger.warning(f"Serviços solicitados não encontrados: IDs {missing_ids}")
+        service_details = response.data
+        try:
+            service_duration_minutes = int(service_details['tempo_servico'])
+            if service_duration_minutes <= 0:
+                raise ValueError("Duração do serviço deve ser positiva.")
+        except (ValueError, TypeError, KeyError):
+             app.logger.error(f"Valor inválido, zero, negativo ou ausente para 'tempo_servico' no serviço {servico_id}.")
+             return jsonify({"message": "Duração do serviço inválida ou não encontrada."}), 500
 
+        service_name = service_details.get('nome', 'Nome Desconhecido')
+        required_role = get_required_role_for_service(service_name)
 
-        total_service_duration_minutes = 0
-        required_roles_set: Set[str] = set()
-        service_names: List[str] = []
+        if not required_role:
+             app.logger.error(f"Não foi possível determinar a função necessária para o serviço '{service_name}' (ID: {servico_id}).")
+             return jsonify({"message": f"Não foi possível determinar o tipo de profissional necessário para '{service_name}'."}), 500
 
-        for service_details in response_servicos.data:
-            try:
-                duration = int(service_details['tempo_servico'])
-                if duration <= 0:
-                    raise ValueError(f"Duração inválida ({duration}) para serviço ID {service_details['id']}")
-                total_service_duration_minutes += duration
-                service_name = service_details.get('nome', f"Serviço ID {service_details['id']}")
-                service_names.append(service_name)
-                role = get_required_role_for_service(service_name)
-                if role:
-                    required_roles_set.add(role)
-
-            except (ValueError, TypeError, KeyError) as e:
-                 app.logger.error(f"Erro ao processar detalhe do serviço ID {service_details.get('id')}: {e}")
-                 return jsonify({"message": f"Erro nos dados do serviço {service_details.get('nome', service_details.get('id'))}. Verifique a configuração."}), 500
-
-        if total_service_duration_minutes <= 0:
-             app.logger.error("Duração total calculada é zero ou negativa.")
-             return jsonify({"message": "Erro ao calcular a duração total dos serviços."}), 500
-
-        highest_required_role = get_highest_required_role(required_roles_set)
-
-        if not highest_required_role:
-             app.logger.error(f"Não foi possível determinar a função necessária para os serviços selecionados: {service_names}")
-             return jsonify({"message": "Não foi possível determinar o tipo de profissional necessário para os serviços selecionados."}), 500
-
-        app.logger.info(f"Serviços: {', '.join(service_names)}. Duração Total={total_service_duration_minutes} min, Requer Função Mais Alta='{highest_required_role}'")
+        app.logger.info(f"Detalhes do serviço '{service_name}': Duração={service_duration_minutes} min, Requer Função='{required_role}'")
 
         response = supabase.table('usuarios')\
             .select('id', count='exact')\
             .eq('empresa_id', empresa_id)\
-            .eq('funcao', highest_required_role)\
+            .eq('funcao', required_role)\
             .execute()
 
         available_staff_count = response.count if response.count is not None else 0
-        app.logger.info(f"Total de profissionais '{highest_required_role}' disponíveis na empresa: {available_staff_count}")
+        app.logger.info(f"Total de profissionais '{required_role}' disponíveis na empresa: {available_staff_count}")
 
         if available_staff_count == 0:
-            app.logger.warning(f"Nenhum profissional '{highest_required_role}' encontrado para a empresa {empresa_id}.")
-            return jsonify({"message": f"Não há profissionais disponíveis ({highest_required_role}) para realizar a combinação de serviços selecionada."}), 404
+            app.logger.warning(f"Nenhum profissional '{required_role}' encontrado para a empresa {empresa_id}.")
+            return jsonify({"message": f"Não há profissionais disponíveis para realizar este serviço ({service_name}) neste dia."}), 404
 
         response = supabase.table('agendamentos')\
             .select('id, hora, servico')\
@@ -255,7 +202,7 @@ def get_available_slots():
             appt_svc_details = resp_appt_svc.data
             appt_required_role = get_required_role_for_service(appt_svc_details.get('nome'))
 
-            if appt_required_role == highest_required_role:
+            if appt_required_role == required_role:
                 relevant_appts_count += 1
                 try:
                     appt_duration = int(appt_svc_details['tempo_servico'])
@@ -274,7 +221,7 @@ def get_available_slots():
                 except (ValueError, TypeError, KeyError) as e:
                     app.logger.warning(f"Erro ao processar detalhes do serviço '{appt_service_name}' ou hora '{appt_time_str}' para agendamento {appt_id}: {e}. Ignorando.")
 
-        app.logger.info(f"Total de agendamentos processados: {processed_appts_count}. Agendamentos relevantes para '{highest_required_role}': {relevant_appts_count}. Intervalos ocupados: {len(busy_intervals)}")
+        app.logger.info(f"Total de agendamentos processados: {processed_appts_count}. Agendamentos relevantes para '{required_role}': {relevant_appts_count}. Intervalos ocupados: {len(busy_intervals)}")
 
         available_slots: List[str] = []
         interval_minutes = 15
@@ -287,15 +234,16 @@ def get_available_slots():
                 app.logger.error(f"Erro fatal ao combinar data/hora para o intervalo {start_op_time}-{end_op_time}. Pulando intervalo.")
                 continue
 
-            last_possible_start_dt = interval_end_dt - timedelta(minutes=total_service_duration_minutes)
+            last_possible_start_dt = interval_end_dt - timedelta(minutes=service_duration_minutes)
             current_potential_dt = interval_start_dt
 
-            app.logger.info(f"Verificando slots no intervalo {interval_start_dt.time()} - {interval_end_dt.time()} (último início possível: {last_possible_start_dt.time()} para {total_service_duration_minutes} min)")
+            app.logger.info(f"Verificando slots no intervalo {interval_start_dt.time()} - {interval_end_dt.time()} (último início possível: {last_possible_start_dt.time()})")
 
             while current_potential_dt <= last_possible_start_dt:
-                potential_end_dt = current_potential_dt + timedelta(minutes=total_service_duration_minutes)
+                potential_end_dt = current_potential_dt + timedelta(minutes=service_duration_minutes)
 
                 if potential_end_dt > interval_end_dt:
+                     app.logger.warning(f"Slot potencial {current_potential_dt.time()} ({service_duration_minutes} min) terminaria após o fim do intervalo ({interval_end_dt.time()}). Ignorando.")
                      current_potential_dt += timedelta(minutes=interval_minutes)
                      continue
 
@@ -311,7 +259,7 @@ def get_available_slots():
 
         unique_available_slots = sorted(list(set(available_slots)))
 
-        app.logger.info(f"Total de horários disponíveis únicos calculados para '{highest_required_role}' (duração {total_service_duration_minutes} min) em {selected_date}: {len(unique_available_slots)}")
+        app.logger.info(f"Total de horários disponíveis únicos calculados para '{required_role}' em {selected_date}: {len(unique_available_slots)}")
 
         return jsonify(unique_available_slots)
 
