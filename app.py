@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from supabase import create_client, Client
 from datetime import datetime, time, timedelta, date
+from flask_cors import CORS
 
 load_dotenv()
 
@@ -15,6 +16,7 @@ if not url or not key:
 supabase: Client = create_client(url, key)
 
 app = Flask(__name__)
+CORS(app)
 
 DIAS_SEMANA_PT = {
     0: 'Segunda-Feira',
@@ -51,11 +53,11 @@ def get_required_role_for_service(service_name: str) -> str | None:
          return 'Banhista'
     elif 'hidratação' in service_name_lower:
          return 'Banhista'
-    app.logger.warning(f"Não foi possível determinar a função para o serviço '{service_name}'. Assumindo 'Banhista' como padrão.")
+    app.logger.warning(f"Não foi possível determinar a função para o serviço '{service_name}'. Assumindo 'Banhista'.")
     return 'Banhista'
 
 
-@app.route('petshop-backend-nj7w-2vyncs42n-ricardopjr1s-projects.vercel.app/api/horarios-disponiveis', methods=['GET'])
+@app.route('petshop-backend-nj7w-1gvlbeknz-ricardopjr1s-projects.vercel.app/api/horarios-disponiveis', methods=['GET'])
 def get_available_slots():
     try:
         app.logger.info("Recebida requisição para /api/horarios-disponiveis")
@@ -125,6 +127,10 @@ def get_available_slots():
         except (ValueError, TypeError, KeyError):
              app.logger.error(f"Valor inválido ou ausente para 'tempo_servico' no serviço {servico_id}.")
              return jsonify({"message": "Duração do serviço inválida ou não encontrada no banco de dados."}), 500
+        if service_duration_minutes <= 0:
+            app.logger.error(f"Duração do serviço inválida (zero ou negativa): {service_duration_minutes}")
+            return jsonify({"message": "Duração do serviço configurada incorretamente."}), 500
+
 
         service_name = service_details.get('nome', 'Nome Desconhecido')
         required_role = get_required_role_for_service(service_name)
@@ -191,40 +197,39 @@ def get_available_slots():
                             appt_start_dt = combine_date_time(selected_date, appt_start_time_obj)
                             appt_end_dt = appt_start_dt + timedelta(minutes=appt_duration)
                             busy_intervals.append({'start': appt_start_dt, 'end': appt_end_dt})
-                            app.logger.debug(f"  -> Intervalo Ocupado por {appt_required_role} (Appt ID: {appt_id}): {appt_start_dt.time()} - {appt_end_dt.time()}")
 
                     except (ValueError, TypeError, KeyError) as e:
                         app.logger.warning(f"Erro ao processar detalhes do serviço '{appt_service_name}' para agendamento {appt_id}: {e}")
-
             else:
                  app.logger.warning(f"Não encontrou detalhes do serviço '{appt_service_name}' para o agendamento existente {appt_id}.")
 
-        app.logger.info(f"Processados {processed_appts_count} agendamentos existentes. {relevant_appts_count} são relevantes para a função '{required_role}'.")
-        app.logger.debug(f"Lista de intervalos ocupados: {busy_intervals}")
+        app.logger.info(f"Processados {processed_appts_count} agendamentos. {relevant_appts_count} relevantes para '{required_role}'.")
 
         available_slots = []
         interval_minutes = 15
 
         current_potential_dt = combine_date_time(selected_date, hora_inicio_op_obj)
         operation_end_dt = combine_date_time(selected_date, hora_fim_op_obj)
+
+        if not current_potential_dt or not operation_end_dt:
+            app.logger.error("Erro fatal ao combinar data/hora de operação.")
+            return jsonify({"message": "Erro interno ao calcular horários de operação."}), 500
+
         last_possible_start_dt = operation_end_dt - timedelta(minutes=service_duration_minutes)
 
-        app.logger.info(f"Verificando slots a cada {interval_minutes} min, de {current_potential_dt.time()} até {last_possible_start_dt.time()} (último início possível).")
+        app.logger.info(f"Verificando slots a cada {interval_minutes} min, de {current_potential_dt.time()} até {last_possible_start_dt.time()} (último início).")
 
         while current_potential_dt <= last_possible_start_dt:
             potential_end_dt = current_potential_dt + timedelta(minutes=service_duration_minutes)
 
             if potential_end_dt.time() > hora_fim_op_obj and hora_fim_op_obj != time(0, 0):
-                 app.logger.debug(f"  -> Slot Potencial {current_potential_dt.time()} - {potential_end_dt.time()} IGNORADO (termina após {hora_fim_op_obj})")
-                 current_potential_dt += timedelta(minutes=interval_minutes)
-                 continue
+                current_potential_dt += timedelta(minutes=interval_minutes)
+                continue
 
             overlapping_count = 0
             for busy in busy_intervals:
                 if current_potential_dt < busy['end'] and potential_end_dt > busy['start']:
                     overlapping_count += 1
-
-            app.logger.debug(f"  -> Testando Slot: {current_potential_dt.strftime('%H:%M')} - {potential_end_dt.strftime('%H:%M')}. Conflitos ({required_role}): {overlapping_count}. Staff: {available_staff_count}")
 
             if overlapping_count < available_staff_count:
                 available_slots.append(current_potential_dt.strftime('%H:%M'))
