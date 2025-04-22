@@ -6,14 +6,14 @@
       "use": "@vercel/python",
       "config": {
         "maxLambdaSize": "15mb",
-        "runtime": "python3.9" // Ou a versão Python que você está usando (ex: python3.10, python3.11)
+        "runtime": "python3.9"
       }
     }
   ],
   "routes": [
     {
-      "src": "/(.*)", // Roteia TODAS as requisições
-      "dest": "app.py" // Para o seu arquivo Flask (app.py)
+      "src": "/(.*)",
+      "dest": "app.py"
     }
   ]
 }
