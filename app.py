@@ -1,3 +1,4 @@
+
 import os
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -55,32 +56,27 @@ def get_required_role_for_service(service_name: str) -> str | None:
     """Determina a função necessária para realizar um serviço com base no nome."""
     if not service_name: return None
     service_name_lower = service_name.lower()
-    # Prioritize 'Groomer' if 'tosa' is present, even if 'banho' is also present
     if 'tosa' in service_name_lower:
         return 'Groomer'
     elif 'banho' in service_name_lower or 'hidratação' in service_name_lower:
          return 'Banhista'
     app.logger.warning(f"Não foi possível determinar a função para o serviço '{service_name}'. Assumindo 'Banhista'.")
-    return 'Banhista' # Default assumption
+    return 'Banhista'
 
 
 @app.route('/api/horarios-disponiveis', methods=['GET'])
 def get_available_slots():
-    """Busca e retorna os horários disponíveis para um ou mais serviços em uma data específica."""
+    """Busca e retorna os horários disponíveis para um serviço em uma data específica."""
     try:
         app.logger.info("Recebida requisição para /api/horarios-disponiveis")
 
         data_str = request.args.get('data')
-        # Use getlist to potentially receive multiple 'servicoId' parameters
-        servico_ids = request.args.getlist('servicoId')
+        servico_id = request.args.get('servicoId')
         empresa_id = request.args.get('empresaId')
 
-        # Check for mandatory parameters, including at least one servicoId
-        if not data_str or not servico_ids or not empresa_id:
+        if not data_str or not servico_id or not empresa_id:
             app.logger.error("Erro: Parâmetros ausentes na requisição.")
-            return jsonify({"message": "Parâmetros 'data', 'empresaId' e pelo menos um 'servicoId' são obrigatórios."}), 400
-
-        app.logger.info(f"IDs de Serviço recebidos: {servico_ids}")
+            return jsonify({"message": "Parâmetros 'data', 'servicoId' e 'empresaId' são obrigatórios."}), 400
 
         try:
             selected_date = datetime.strptime(data_str, '%Y-%m-%d').date()
@@ -92,9 +88,8 @@ def get_available_slots():
              app.logger.warning(f"Tentativa de agendamento para data passada: {selected_date}")
              return jsonify({"message": "Não é possível agendar para datas passadas."}), 400
 
-        app.logger.info(f"Buscando horários para Empresa: {empresa_id}, Data: {selected_date}, Serviços IDs: {servico_ids}")
+        app.logger.info(f"Buscando horários para Empresa: {empresa_id}, Data: {selected_date}, Serviço: {servico_id}")
 
-        # --- Fetch Operating Hours (Same as before) ---
         dia_semana_num = selected_date.weekday()
         dia_semana_nome = DIAS_SEMANA_PT.get(dia_semana_num)
 
@@ -102,7 +97,7 @@ def get_available_slots():
             app.logger.error(f"Erro crítico: Dia da semana {dia_semana_num} não mapeado.")
             return jsonify({"message": "Erro interno ao determinar o dia da semana."}), 500
 
-        response_hours = supabase.table('horarios_funcionamento')\
+        response = supabase.table('horarios_funcionamento')\
             .select('hora_inicio, hora_fim')\
             .eq('empresa_id', empresa_id)\
             .eq('dia_semana', dia_semana_nome)\
@@ -110,12 +105,12 @@ def get_available_slots():
             .order('hora_inicio')\
             .execute()
 
-        if not response_hours.data:
+        if not response.data:
             app.logger.info(f"Nenhum horário de funcionamento ATIVO encontrado para {dia_semana_nome} na empresa {empresa_id}.")
             return jsonify({"message": f"Petshop fechado ou sem horário configurado para {dia_semana_nome}."}), 404
 
         operating_intervals: List[Tuple[time, time]] = []
-        for interval_data in response_hours.data:
+        for interval_data in response.data:
             hora_inicio_obj = parse_time(interval_data.get('hora_inicio'))
             hora_fim_obj = parse_time(interval_data.get('hora_fim'))
 
@@ -129,131 +124,85 @@ def get_available_slots():
              app.logger.error(f"Nenhum intervalo de funcionamento VÁLIDO encontrado para {dia_semana_nome} na empresa {empresa_id} após processamento.")
              return jsonify({"message": f"Erro ao processar horários de funcionamento para {dia_semana_nome}."}), 500
 
-        # --- Fetch Details for ALL Selected Services ---
-        response_services = supabase.table('servicos')\
-            .select('id, tempo_servico, nome')\
+        response = supabase.table('servicos')\
+            .select('tempo_servico, nome')\
+            .eq('id', servico_id)\
             .eq('empresa_id', empresa_id)\
-            .in_('id', servico_ids) # Use .in_() to fetch multiple IDs
+            .maybe_single()\
             .execute()
 
-        # Verify if all requested services were found
-        if not response_services.data or len(response_services.data) != len(servico_ids):
-            found_ids = {str(s['id']) for s in response_services.data} if response_services.data else set()
-            missing_ids = [sid for sid in servico_ids if str(sid) not in found_ids]
-            app.logger.warning(f"Serviço(s) com ID(s) {missing_ids} não encontrado(s) para a empresa {empresa_id}.")
-            return jsonify({"message": f"Um ou mais serviços selecionados não foram encontrados: {missing_ids}."}), 404
+        if not response.data:
+            app.logger.warning(f"Serviço com ID {servico_id} não encontrado para a empresa {empresa_id}.")
+            return jsonify({"message": "Serviço não encontrado."}), 404
 
-        # --- Calculate Total Duration and Determine Required Role ---
-        total_service_duration_minutes = 0
-        required_role = None
-        service_names_list = []
+        service_details = response.data
+        try:
+            service_duration_minutes = int(service_details['tempo_servico'])
+            if service_duration_minutes <= 0:
+                raise ValueError("Duração do serviço deve ser positiva.")
+        except (ValueError, TypeError, KeyError):
+             app.logger.error(f"Valor inválido, zero, negativo ou ausente para 'tempo_servico' no serviço {servico_id}.")
+             return jsonify({"message": "Duração do serviço inválida ou não encontrada."}), 500
 
-        for service_details in response_services.data:
-            try:
-                duration = int(service_details['tempo_servico'])
-                if duration <= 0:
-                    raise ValueError(f"Duração inválida (<= 0) para serviço ID {service_details['id']}")
-                total_service_duration_minutes += duration
+        service_name = service_details.get('nome', 'Nome Desconhecido')
+        required_role = get_required_role_for_service(service_name)
 
-                service_name = service_details.get('nome', f"Serviço ID {service_details['id']}")
-                service_names_list.append(service_name)
+        if not required_role:
+             app.logger.error(f"Não foi possível determinar a função necessária para o serviço '{service_name}' (ID: {servico_id}).")
+             return jsonify({"message": f"Não foi possível determinar o tipo de profissional necessário para '{service_name}'."}), 500
 
-                current_role = get_required_role_for_service(service_name)
-                if not current_role:
-                     app.logger.error(f"Não foi possível determinar a função necessária para o serviço '{service_name}' (ID: {service_details['id']}).")
-                     return jsonify({"message": f"Não foi possível determinar o tipo de profissional necessário para '{service_name}'."}), 500
+        app.logger.info(f"Detalhes do serviço '{service_name}': Duração={service_duration_minutes} min, Requer Função='{required_role}'")
 
-                # Check if all services require the same role
-                if required_role is None:
-                    required_role = current_role # Set role based on the first service
-                elif required_role != current_role:
-                    app.logger.warning(f"Conflito de funções detectado: Serviço '{service_name}' requer '{current_role}', mas outros serviços requerem '{required_role}'.")
-                    return jsonify({"message": "Os serviços selecionados requerem diferentes tipos de profissionais e não podem ser agendados juntos neste bloco. Por favor, agende separadamente."}), 400
-
-            except (ValueError, TypeError, KeyError) as e:
-                 app.logger.error(f"Erro ao processar duração ou nome do serviço ID {service_details.get('id', 'Desconhecido')}: {e}")
-                 return jsonify({"message": f"Dados inválidos para o serviço ID {service_details.get('id', 'Desconhecido')}."}), 500
-
-        if required_role is None: # Safety check
-             app.logger.error("Erro crítico: Nenhuma função requerida foi determinada após processar os serviços selecionados.")
-             return jsonify({"message": "Erro interno ao determinar o profissional necessário."}), 500
-
-        # Use the calculated total duration
-        service_duration_minutes = total_service_duration_minutes
-        combined_service_names = " + ".join(service_names_list)
-
-        app.logger.info(f"Serviços combinados '{combined_service_names}': Duração Total={service_duration_minutes} min, Requer Função='{required_role}'")
-
-        # --- Fetch Available Staff Count (Based on the unified required_role) ---
-        response_staff = supabase.table('usuarios')\
+        response = supabase.table('usuarios')\
             .select('id', count='exact')\
             .eq('empresa_id', empresa_id)\
             .eq('funcao', required_role)\
             .execute()
 
-        available_staff_count = response_staff.count if response_staff.count is not None else 0
+        available_staff_count = response.count if response.count is not None else 0
         app.logger.info(f"Total de profissionais '{required_role}' disponíveis na empresa: {available_staff_count}")
 
         if available_staff_count == 0:
-            app.logger.warning(f"Nenhum profissional '{required_role}' encontrado para a empresa {empresa_id} para os serviços: {combined_service_names}.")
-            return jsonify({"message": f"Não há profissionais '{required_role}' disponíveis para realizar os serviços selecionados neste dia."}), 404
+            app.logger.warning(f"Nenhum profissional '{required_role}' encontrado para a empresa {empresa_id}.")
+            return jsonify({"message": f"Não há profissionais disponíveis para realizar este serviço ({service_name}) neste dia."}), 404
 
-        # --- Fetch Existing Appointments (Same as before) ---
-        response_appts = supabase.table('agendamentos')\
+        response = supabase.table('agendamentos')\
             .select('id, hora, servico')\
             .eq('empresa_id', empresa_id)\
             .eq('data', data_str)\
             .execute()
 
-        existing_appointments = response_appts.data if response_appts.data else []
+        existing_appointments = response.data if response.data else []
         app.logger.info(f"Total de agendamentos encontrados na data {data_str}: {len(existing_appointments)}")
 
-        # --- Calculate Busy Intervals (Based on appointments requiring the SAME role) ---
         busy_intervals: List[Dict[str, datetime]] = []
         processed_appts_count = 0
         relevant_appts_count = 0
-
-        # Cache service details to avoid repeated DB calls inside the loop
-        appt_service_details_cache = {}
 
         for appt in existing_appointments:
             processed_appts_count += 1
             appt_id = appt.get('id')
             appt_time_str = appt.get('hora')
-            appt_service_name = appt.get('servico') # Name of the service in the appointment
+            appt_service_name = appt.get('servico')
 
             if not appt_time_str or not appt_service_name:
                 app.logger.warning(f"Agendamento ID {appt_id} com dados incompletos (hora ou serviço). Ignorando.")
                 continue
 
-            # Fetch service details for the appointment's service (use cache)
-            if appt_service_name not in appt_service_details_cache:
-                resp_appt_svc = supabase.table('servicos')\
-                    .select('tempo_servico, nome')\
-                    .eq('empresa_id', empresa_id)\
-                    .eq('nome', appt_service_name)\
-                    .maybe_single()\
-                    .execute()
+            resp_appt_svc = supabase.table('servicos')\
+                .select('tempo_servico, nome')\
+                .eq('empresa_id', empresa_id)\
+                .eq('nome', appt_service_name)\
+                .maybe_single()\
+                .execute()
 
-                if not resp_appt_svc.data:
-                    app.logger.warning(f"Não foram encontrados detalhes para o serviço '{appt_service_name}' do agendamento {appt_id}. Ignorando este agendamento para cálculo de ocupação.")
-                    # Cache the failure to avoid retrying
-                    appt_service_details_cache[appt_service_name] = None
-                    continue
-                else:
-                     appt_service_details_cache[appt_service_name] = resp_appt_svc.data
-            
-            # Check if service details were found (might be None from cache)
-            appt_svc_details = appt_service_details_cache[appt_service_name]
-            if not appt_svc_details:
-                continue # Skip if service details couldn't be found previously
+            if not resp_appt_svc.data:
+                app.logger.warning(f"Não foram encontrados detalhes para o serviço '{appt_service_name}' do agendamento {appt_id}. Ignorando este agendamento para cálculo de ocupação.")
+                continue
 
-
-            # Determine the role required for the *existing appointment's* service
+            appt_svc_details = resp_appt_svc.data
             appt_required_role = get_required_role_for_service(appt_svc_details.get('nome'))
 
-            # Only consider this appointment as "busy" if it requires the SAME type of professional
-            # as the service(s) the user is trying to book.
             if appt_required_role == required_role:
                 relevant_appts_count += 1
                 try:
@@ -267,7 +216,6 @@ def get_available_slots():
 
                         appt_end_dt = appt_start_dt + timedelta(minutes=appt_duration)
                         busy_intervals.append({'start': appt_start_dt, 'end': appt_end_dt})
-                        # app.logger.debug(f"Intervalo ocupado relevante (Role: {required_role}): {appt_start_dt.time()} - {appt_end_dt.time()} (Appt ID: {appt_id})")
                     else:
                          app.logger.warning(f"Não foi possível converter a hora '{appt_time_str}' do agendamento {appt_id}. Ignorando.")
 
@@ -276,9 +224,8 @@ def get_available_slots():
 
         app.logger.info(f"Total de agendamentos processados: {processed_appts_count}. Agendamentos relevantes para '{required_role}': {relevant_appts_count}. Intervalos ocupados: {len(busy_intervals)}")
 
-        # --- Generate Available Slots (Using TOTAL duration) ---
         available_slots: List[str] = []
-        interval_minutes = 15 # Check availability every 15 minutes
+        interval_minutes = 15
 
         for start_op_time, end_op_time in operating_intervals:
             interval_start_dt = combine_date_time(selected_date, start_op_time)
@@ -288,49 +235,32 @@ def get_available_slots():
                 app.logger.error(f"Erro fatal ao combinar data/hora para o intervalo {start_op_time}-{end_op_time}. Pulando intervalo.")
                 continue
 
-            # Calculate the latest possible start time for the *combined* service duration
             last_possible_start_dt = interval_end_dt - timedelta(minutes=service_duration_minutes)
             current_potential_dt = interval_start_dt
 
-            app.logger.info(f"Verificando slots no intervalo {interval_start_dt.time()} - {interval_end_dt.time()} (duração total: {service_duration_minutes} min, último início possível: {last_possible_start_dt.time()})")
+            app.logger.info(f"Verificando slots no intervalo {interval_start_dt.time()} - {interval_end_dt.time()} (último início possível: {last_possible_start_dt.time()})")
 
             while current_potential_dt <= last_possible_start_dt:
-                # Calculate end time based on the *total* duration
                 potential_end_dt = current_potential_dt + timedelta(minutes=service_duration_minutes)
 
-                # Ensure the potential slot fits within the operating interval
                 if potential_end_dt > interval_end_dt:
-                     # This check might be redundant due to the `last_possible_start_dt` calculation, but kept for safety.
-                     # app.logger.debug(f"Slot potencial {current_potential_dt.time()} ({service_duration_minutes} min) terminaria após o fim do intervalo ({interval_end_dt.time()}). Ignorando.")
+                     app.logger.warning(f"Slot potencial {current_potential_dt.time()} ({service_duration_minutes} min) terminaria após o fim do intervalo ({interval_end_dt.time()}). Ignorando.")
                      current_potential_dt += timedelta(minutes=interval_minutes)
                      continue
 
-                # Check for overlaps with existing relevant appointments
                 overlapping_count = 0
                 for busy in busy_intervals:
-                    # Check if the potential slot [start, end) overlaps with the busy interval [start, end)
                     if current_potential_dt < busy['end'] and potential_end_dt > busy['start']:
                         overlapping_count += 1
-                        # app.logger.debug(f"Slot potencial {current_potential_dt.time()} - {potential_end_dt.time()} conflita com {busy['start'].time()} - {busy['end'].time()}. Contagem de conflitos: {overlapping_count}")
 
-
-                # If the number of overlapping appointments is less than the number of available staff, the slot is available
                 if overlapping_count < available_staff_count:
                     available_slots.append(current_potential_dt.strftime('%H:%M'))
-                    # app.logger.debug(f"Slot {current_potential_dt.strftime('%H:%M')} disponível (Conflitos: {overlapping_count}, Staff: {available_staff_count})")
-                # else:
-                    # app.logger.debug(f"Slot {current_potential_dt.strftime('%H:%M')} indisponível (Conflitos: {overlapping_count}, Staff: {available_staff_count})")
 
-
-                # Move to the next potential start time
                 current_potential_dt += timedelta(minutes=interval_minutes)
 
-        # Remove duplicates and sort
         unique_available_slots = sorted(list(set(available_slots)))
 
-        app.logger.info(f"Total de horários disponíveis únicos calculados para '{required_role}' (duração {service_duration_minutes} min) em {selected_date}: {len(unique_available_slots)}")
-        app.logger.info(f"Horários disponíveis: {unique_available_slots}")
-
+        app.logger.info(f"Total de horários disponíveis únicos calculados para '{required_role}' em {selected_date}: {len(unique_available_slots)}")
 
         return jsonify(unique_available_slots)
 
@@ -340,5 +270,4 @@ def get_available_slots():
 
 
 if __name__ == '__main__':
-    # Set debug=False for production
     app.run(host='0.0.0.0', port=5000, debug=True)
