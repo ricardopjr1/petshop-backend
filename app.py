@@ -63,7 +63,7 @@ def get_required_role_for_service(service_name: str) -> str | None:
          return 'Banhista'
     app.logger.warning(f"Não foi possível determinar a função para o serviço '{service_name}'. Assumindo 'Banhista' por padrão.")
     # Default if no specific keyword is found
-    return 'Banhista' # Or maybe return None and handle it later? Let's default for now.
+    return 'Banhista' # Defaulting to Banhista
 
 def determine_dominant_role(roles: Set[str]) -> str | None:
     """Determina a função 'dominante' de um conjunto de funções (Groomer > Banhista)."""
@@ -76,25 +76,32 @@ def determine_dominant_role(roles: Set[str]) -> str | None:
     # If only other roles or unrecognized roles are present, return the first one found
     # or handle as an error depending on requirements. Returning None might be safer.
     app.logger.warning(f"Nenhuma função dominante (Groomer/Banhista) encontrada no conjunto: {roles}. Verifique a configuração dos serviços.")
-    return None # Indicate ambiguity or unsupported combination
+    # Fallback to Banhista if only non-standard roles were found, or return None?
+    # Let's return None to indicate a potential configuration issue or unsupported mix.
+    # If Banhista is always acceptable as a minimum, return 'Banhista'. Choose based on business logic.
+    # Returning None for now to be stricter.
+    return None
 
 
 @app.route('/api/horarios-disponiveis', methods=['GET'])
 def get_available_slots():
-    """Busca e retorna os horários disponíveis para um ou mais serviços em uma data específica."""
+    """Busca e retorna os horários disponíveis para um ou mais nomes de serviços em uma data específica."""
     try:
         app.logger.info("Recebida requisição para /api/horarios-disponiveis")
 
         data_str = request.args.get('data')
-        # Use getlist to capture multiple values for the same key
-        servico_ids = request.args.getlist('servicoId')
+        # Use getlist to capture multiple values for the same key 'servicoNome'
+        servico_nomes = request.args.getlist('servicoNome') # <<< CHANGED: Get service names
         empresa_id = request.args.get('empresaId')
 
-        if not data_str or not servico_ids or not empresa_id:
-            app.logger.error("Erro: Parâmetros ausentes na requisição.")
-            return jsonify({"message": "Parâmetros 'data', 'empresaId' e pelo menos um 'servicoId' são obrigatórios."}), 400
+        # Ensure names are strings and handle potential None values if getlist returns them
+        servico_nomes = [str(nome) for nome in servico_nomes if nome]
 
-        app.logger.info(f"Parâmetros recebidos: Data='{data_str}', Empresa='{empresa_id}', Serviços='{servico_ids}'")
+        if not data_str or not servico_nomes or not empresa_id:
+            app.logger.error("Erro: Parâmetros ausentes na requisição.")
+            return jsonify({"message": "Parâmetros 'data', 'empresaId' e pelo menos um 'servicoNome' são obrigatórios."}), 400
+
+        app.logger.info(f"Parâmetros recebidos: Data='{data_str}', Empresa='{empresa_id}', Serviços (nomes)='{servico_nomes}'") # <<< CHANGED Log message
 
         try:
             selected_date = datetime.strptime(data_str, '%Y-%m-%d').date()
@@ -106,7 +113,7 @@ def get_available_slots():
              app.logger.warning(f"Tentativa de agendamento para data passada: {selected_date}")
              return jsonify({"message": "Não é possível agendar para datas passadas."}), 400
 
-        app.logger.info(f"Buscando horários para Empresa: {empresa_id}, Data: {selected_date}, Serviços: {servico_ids}")
+        app.logger.info(f"Buscando horários para Empresa: {empresa_id}, Data: {selected_date}, Serviços (nomes): {servico_nomes}") # <<< CHANGED Log message
 
         dia_semana_num = selected_date.weekday()
         dia_semana_nome = DIAS_SEMANA_PT.get(dia_semana_num)
@@ -143,63 +150,64 @@ def get_available_slots():
              app.logger.error(f"Nenhum intervalo de funcionamento VÁLIDO encontrado para {dia_semana_nome} na empresa {empresa_id} após processamento.")
              return jsonify({"message": f"Erro ao processar horários de funcionamento para {dia_semana_nome}."}), 500
 
-        # --- Get Details for ALL Selected Services ---
+        # --- Get Details for ALL Selected Service Names ---
+        # <<< CHANGED: Fetch by name ('nome') instead of 'id'
         response_services = supabase.table('servicos')\
-            .select('id, tempo_servico, nome')\
-            .in_('id', servico_ids)\
+            .select('nome, tempo_servico') \
             .eq('empresa_id', empresa_id)\
+            .in_('nome', servico_nomes)\
             .execute()
 
         if not response_services.data:
-            app.logger.warning(f"Nenhum dos serviços com IDs {servico_ids} foi encontrado para a empresa {empresa_id}.")
-            return jsonify({"message": "Nenhum dos serviços selecionados foi encontrado."}), 404
+            app.logger.warning(f"Nenhum dos serviços com nomes {servico_nomes} foi encontrado para a empresa {empresa_id}.")
+            return jsonify({"message": "Nenhum dos serviços selecionados foi encontrado ou cadastrado corretamente."}), 404
 
-        # Check if all requested services were found
-        found_service_ids = {str(s['id']) for s in response_services.data}
-        requested_service_ids = set(servico_ids)
-        if found_service_ids != requested_service_ids:
-            missing_ids = requested_service_ids - found_service_ids
-            app.logger.warning(f"Alguns serviços solicitados não foram encontrados ou pertencem a outra empresa: {missing_ids}")
-            # Option: return error, or proceed with found services? Let's proceed for now.
-            # return jsonify({"message": f"Serviços não encontrados: {missing_ids}"}), 404
+        # Check if all requested service names were found
+        found_service_names = {s['nome'] for s in response_services.data}
+        requested_service_names_set = set(servico_nomes)
+        if found_service_names != requested_service_names_set:
+            missing_names = requested_service_names_set - found_service_names
+            app.logger.warning(f"Alguns serviços solicitados não foram encontrados para esta empresa: {missing_names}")
+            # Decide: error out or proceed with found services? Proceeding for now.
+            # return jsonify({"message": f"Serviços não encontrados: {', '.join(missing_names)}"}), 404
 
         # --- Calculate Total Duration and Determine Required Role ---
         total_service_duration_minutes = 0
-        service_names: List[str] = []
+        actual_service_names_found: List[str] = [] # Use the names confirmed found in DB
         required_roles_set: Set[str] = set()
 
-        for service_details in response_services.data:
+        for service_details in response_services.data: # Iterate only over services found in DB
             try:
                 duration = int(service_details['tempo_servico'])
                 if duration <= 0:
                     raise ValueError("Duração do serviço deve ser positiva.")
                 total_service_duration_minutes += duration
-                service_name = service_details.get('nome', f'Serviço ID {service_details["id"]}')
-                service_names.append(service_name)
+                service_name = service_details['nome'] # Use the name from DB
+                actual_service_names_found.append(service_name)
                 role = get_required_role_for_service(service_name)
                 if role:
                     required_roles_set.add(role)
                 else:
-                    # Handle case where role couldn't be determined for a service
-                    app.logger.error(f"Não foi possível determinar a função para o serviço '{service_name}' (ID: {service_details['id']}).")
+                    # This case might be less likely if get_required_role_for_service has a default
+                    app.logger.error(f"Não foi possível determinar a função para o serviço '{service_name}'.")
                     return jsonify({"message": f"Não foi possível determinar o tipo de profissional necessário para '{service_name}'."}), 500
 
             except (ValueError, TypeError, KeyError) as e:
-                 app.logger.error(f"Valor inválido ou ausente para 'tempo_servico' no serviço ID {service_details.get('id', 'Desconhecido')}: {e}")
+                 app.logger.error(f"Valor inválido ou ausente para 'tempo_servico' no serviço '{service_details.get('nome', 'Desconhecido')}': {e}")
                  return jsonify({"message": f"Duração inválida ou não encontrada para o serviço '{service_details.get('nome', 'Desconhecido')}'."}), 500
 
         if total_service_duration_minutes == 0:
-             app.logger.error(f"Duração total calculada é zero para os serviços: {servico_ids}.")
-             return jsonify({"message": "Erro ao calcular a duração total dos serviços."}), 500
+             # This could happen if only missing services were requested or all found services had 0 duration
+             app.logger.error(f"Duração total calculada é zero para os serviços encontrados: {actual_service_names_found}.")
+             return jsonify({"message": "Erro ao calcular a duração total dos serviços válidos."}), 500
 
-        # Determine the single role needed based on the set of roles required by individual services
+        # Determine the single role needed based on the set of roles required by individual services found
         required_role = determine_dominant_role(required_roles_set)
         if not required_role:
-             app.logger.error(f"Não foi possível determinar uma função única/válida para a combinação de serviços: {service_names} (Funções necessárias: {required_roles_set})")
-             # This might happen if services require incompatible roles or roles are not defined correctly.
-             return jsonify({"message": f"Não é possível combinar os serviços selecionados ou falta definição de profissional."}), 400 # 400 Bad Request might be suitable here
+             app.logger.error(f"Não foi possível determinar uma função única/válida para a combinação de serviços: {actual_service_names_found} (Funções necessárias: {required_roles_set})")
+             return jsonify({"message": f"Não é possível combinar os serviços selecionados ou falta definição de profissional."}), 400
 
-        app.logger.info(f"Serviços Selecionados: {service_names}")
+        app.logger.info(f"Serviços Considerados (encontrados): {actual_service_names_found}")
         app.logger.info(f"Duração Total Calculada: {total_service_duration_minutes} min")
         app.logger.info(f"Função Requerida Determinada: '{required_role}'")
 
@@ -215,12 +223,13 @@ def get_available_slots():
         app.logger.info(f"Total de profissionais '{required_role}' disponíveis na empresa: {available_staff_count}")
 
         if available_staff_count == 0:
-            app.logger.warning(f"Nenhum profissional '{required_role}' encontrado para a empresa {empresa_id} para realizar {service_names}.")
+            app.logger.warning(f"Nenhum profissional '{required_role}' encontrado para a empresa {empresa_id} para realizar {actual_service_names_found}.")
             return jsonify({"message": f"Não há profissionais '{required_role}' disponíveis para realizar os serviços selecionados neste dia."}), 404
 
         # --- Get Existing Appointments for the Day ---
+        # Assume 'servico' column in 'agendamentos' stores the service NAME
         response_appts = supabase.table('agendamentos')\
-            .select('id, hora, servico')\
+            .select('id, hora, servico') # 'servico' should be the service name
             .eq('empresa_id', empresa_id)\
             .eq('data', data_str)\
             .execute()
@@ -240,13 +249,14 @@ def get_available_slots():
             processed_appts_count += 1
             appt_id = appt.get('id')
             appt_time_str = appt.get('hora')
-            appt_service_name = appt.get('servico') # Name of the service in the appointment
+            appt_service_name = appt.get('servico') # Name of the service in the existing appointment
 
             if not appt_time_str or not appt_service_name:
-                app.logger.warning(f"Agendamento ID {appt_id} com dados incompletos (hora ou serviço). Ignorando.")
+                app.logger.warning(f"Agendamento ID {appt_id} com dados incompletos (hora ou nome do serviço). Ignorando.")
                 continue
 
             # Fetch appointment's service details (use cache if available)
+            # <<< This part still correctly uses the name from the appointment
             if appt_service_name not in appt_service_details_cache:
                 resp_appt_svc = supabase.table('servicos')\
                     .select('tempo_servico, nome')\
@@ -261,10 +271,10 @@ def get_available_slots():
                     continue
                 else:
                      appt_service_details_cache[appt_service_name] = resp_appt_svc.data
-            
+
             appt_svc_details = appt_service_details_cache[appt_service_name]
             if appt_svc_details is None: # Skip if fetching failed previously
-                continue 
+                continue
 
             # Determine the role required for the *existing appointment's* service
             appt_required_role = get_required_role_for_service(appt_svc_details.get('nome'))
@@ -309,7 +319,7 @@ def get_available_slots():
             last_possible_start_dt = interval_end_dt - timedelta(minutes=total_service_duration_minutes)
             current_potential_dt = interval_start_dt
 
-            app.logger.info(f"Verificando slots no intervalo {interval_start_dt.time()} - {interval_end_dt.time()} (duração: {total_service_duration_minutes} min, último início: {last_possible_start_dt.time()})")
+            app.logger.info(f"Verificando slots no intervalo {interval_start_dt.time()} - {interval_end_dt.time()} (duração total: {total_service_duration_minutes} min, último início: {last_possible_start_dt.time()})") # <<< CHANGED Log message
 
             while current_potential_dt <= last_possible_start_dt:
                 # Calculate the end time for this potential slot using the *total* duration
@@ -317,9 +327,6 @@ def get_available_slots():
 
                 # Ensure the potential slot fits within the current operating interval
                 if potential_end_dt > interval_end_dt:
-                     # This check is technically redundant due to the `while current_potential_dt <= last_possible_start_dt` condition,
-                     # but kept for clarity or if interval_minutes changes dynamics.
-                     # app.logger.debug(f"Slot potencial {current_potential_dt.time()} ({total_service_duration_minutes} min) terminaria após o fim do intervalo ({interval_end_dt.time()}).")
                      current_potential_dt += timedelta(minutes=interval_minutes)
                      continue
 
@@ -329,13 +336,10 @@ def get_available_slots():
                     # Check for overlap: (SlotStart < BusyEnd) and (SlotEnd > BusyStart)
                     if current_potential_dt < busy['end'] and potential_end_dt > busy['start']:
                         overlapping_count += 1
-                        # app.logger.debug(f"Slot potencial {current_potential_dt.time()}-{potential_end_dt.time()} sobrepõe com {busy['start'].time()}-{busy['end'].time()}. Contagem: {overlapping_count}")
-
 
                 # If the number of overlapping appointments is less than the number of available staff for that role, the slot is available
                 if overlapping_count < available_staff_count:
                     available_slots.append(current_potential_dt.strftime('%H:%M'))
-                    # app.logger.debug(f"Slot encontrado: {current_potential_dt.strftime('%H:%M')}. Sobreposições({overlapping_count}) < Staff({available_staff_count})")
 
                 # Move to the next potential start time
                 current_potential_dt += timedelta(minutes=interval_minutes)
