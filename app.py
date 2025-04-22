@@ -1,4 +1,4 @@
-# --- START OF FILE app.py (CORRIGIDO INDENTATIONERROR) ---
+# --- START OF FILE app.py (CORS ATUALIZADO) ---
 
 
 import os
@@ -23,18 +23,23 @@ supabase: Client = create_client(url, key)
 
 # Configuração Flask App e Logging
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s') # Adicionado formato ao log
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 app.logger.setLevel(logging.INFO)
 
 # --- INÍCIO DA CONFIGURAÇÃO CORS ---
-# Mantendo a configuração que permite sua URL Netlify e desenvolvimento local
 
-netlify_frontend_url = "https://effervescent-marshmallow-307a04.netlify.app"
+# URLs dos seus frontends
+netlify_frontend_url_old = "https://effervescent-marshmallow-307a04.netlify.app" # Mantida caso ainda use
+netlify_frontend_url_new = "https://magenta-mandazi-f7d096.netlify.app"       # <<< NOVA URL ATUALIZADA
+
+# Outras origens (desenvolvimento local)
 local_dev_url_1 = "http://localhost:8000"
 local_dev_url_2 = "http://127.0.0.1:5500"
 
+# Lista atualizada de origens permitidas
 allowed_origins = [
-    netlify_frontend_url,
+    netlify_frontend_url_old,
+    netlify_frontend_url_new,  # <<< ADICIONADA A NOVA URL
     local_dev_url_1,
     local_dev_url_2,
 ]
@@ -42,7 +47,7 @@ allowed_origins = [
 app.logger.info(f"--- CONFIGURAÇÃO CORS: Origens permitidas: {allowed_origins} ---")
 
 CORS(app,
-     origins=allowed_origins,
+     origins=allowed_origins, # Usa a lista atualizada
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
      supports_credentials=True,
      expose_headers=["Content-Type", "Authorization"]
@@ -169,13 +174,11 @@ def get_available_slots():
               app.logger.error(f"Nenhum intervalo de funcionamento VÁLIDO encontrado para {dia_semana_nome} na empresa {empresa_id} após processamento.")
               return jsonify({"message": f"Erro ao processar horários de funcionamento para {dia_semana_nome}."}), 500
 
-        # ---> MODIFICADO: Busca detalhes de TODOS os serviços solicitados <---
         response_services = supabase.table('servicos')\
             .select('id, tempo_servico, nome')\
             .in_('id', servico_ids_list)\
             .eq('empresa_id', empresa_id)\
             .execute()
-        # ---^ LINHA 181 CORRIGIDA (SEM INDENTAÇÃO EXTRA) ^---
 
         if not response_services.data or len(response_services.data) != len(servico_ids_list):
             found_ids = [s['id'] for s in response_services.data] if response_services.data else []
