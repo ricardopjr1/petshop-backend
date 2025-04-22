@@ -1,4 +1,4 @@
-# --- START OF FILE app.py (MODIFICADO PARA MÚLTIPLOS SERVIÇOS) ---
+# --- START OF FILE app.py (CORRIGIDO INDENTATIONERROR) ---
 
 
 import os
@@ -89,7 +89,6 @@ def get_required_role_for_service(service_name: str) -> str | None:
     app.logger.warning(f"Não foi possível determinar a função para o serviço '{service_name}'. Assumindo 'Banhista'.")
     return 'Banhista'
 
-# ---> ADICIONADO: Função para determinar role para múltiplos serviços <---
 def get_required_role_for_multiple_services(service_names: List[str]) -> str:
     """Determina a função MAIS EXIGENTE necessária para uma lista de serviços."""
     if not service_names:
@@ -114,11 +113,9 @@ def get_available_slots():
         app.logger.info(f"Recebida requisição GET para /api/horarios-disponiveis de {request.origin}")
 
         data_str = request.args.get('data')
-        # ---> MODIFICADO: Lê o parâmetro 'servicoIds' (plural) <---
         servico_ids_str = request.args.get('servicoIds')
-        empresa_id = request.args.get('empresaId') # Assume que empresaId é um UUID (string)
+        empresa_id = request.args.get('empresaId')
 
-        # ---> MODIFICADO: Validação robusta dos parâmetros essenciais <---
         if not data_str or not servico_ids_str or not empresa_id:
             missing_params = []
             if not data_str: missing_params.append("'data'")
@@ -128,7 +125,6 @@ def get_available_slots():
             app.logger.error(f"Erro 400: {error_msg} (data='{data_str}', servicoIds='{servico_ids_str}', empresaId='{empresa_id}')")
             return jsonify({"message": error_msg}), 400
 
-        # ---> MODIFICADO: Processa 'servicoIds' como lista de strings (UUIDs) <---
         try:
             servico_ids_list = [sid.strip() for sid in servico_ids_str.split(',') if sid.strip()]
             if not servico_ids_list:
@@ -151,7 +147,6 @@ def get_available_slots():
 
         app.logger.info(f"Buscando horários para Empresa: {empresa_id}, Data: {selected_date}, Serviços IDs: {servico_ids_list}")
 
-        # ... (Busca de horário de funcionamento - sem mudanças) ...
         dia_semana_num = selected_date.weekday()
         dia_semana_nome = DIAS_SEMANA_PT.get(dia_semana_num)
         if not dia_semana_nome:
@@ -177,18 +172,17 @@ def get_available_slots():
         # ---> MODIFICADO: Busca detalhes de TODOS os serviços solicitados <---
         response_services = supabase.table('servicos')\
             .select('id, tempo_servico, nome')\
-            .in_('id', servico_ids_list) # Usa a lista de strings (UUIDs)
+            .in_('id', servico_ids_list)\
             .eq('empresa_id', empresa_id)\
             .execute()
+        # ---^ LINHA 181 CORRIGIDA (SEM INDENTAÇÃO EXTRA) ^---
 
-        # Verifica se TODOS os serviços solicitados foram encontrados
         if not response_services.data or len(response_services.data) != len(servico_ids_list):
             found_ids = [s['id'] for s in response_services.data] if response_services.data else []
             missing_ids = list(set(servico_ids_list) - set(found_ids))
             app.logger.warning(f"Erro 404: Serviços não encontrados para a empresa {empresa_id}. Solicitados: {servico_ids_list}, Faltantes: {missing_ids}")
             return jsonify({"message": f"Um ou mais serviços selecionados não foram encontrados (IDs: {', '.join(missing_ids)})."}), 404
 
-        # ---> MODIFICADO: Calcula DURAÇÃO TOTAL e determina FUNÇÃO REQUERIDA <---
         total_service_duration_minutes = 0
         service_names: List[str] = []
         for service_detail in response_services.data:
@@ -203,11 +197,9 @@ def get_available_slots():
                  app.logger.error(f"Erro 500: Duração inválida para serviço ID {service_id_error}. Detalhe: {service_detail}. Erro: {e}")
                  return jsonify({"message": f"Duração inválida encontrada para o serviço ID {service_id_error}."}), 500
 
-        # Determina a função baseada em TODOS os nomes de serviço
         required_role = get_required_role_for_multiple_services(service_names)
         app.logger.info(f"Serviços: {service_names}, Duração Total: {total_service_duration_minutes} min, Função Requerida: '{required_role}'")
 
-        # ---> MODIFICADO: Busca staff baseado na função requerida para o BLOCO <---
         response_staff = supabase.table('usuarios')\
             .select('id', count='exact')\
             .eq('empresa_id', empresa_id)\
@@ -219,10 +211,8 @@ def get_available_slots():
 
         if available_staff_count == 0:
             app.logger.warning(f"Nenhum profissional '{required_role}' encontrado para a empresa {empresa_id}.")
-            # Mensagem mais clara para múltiplos serviços
             return jsonify({"message": f"Não há profissionais ({required_role}) disponíveis para realizar a combinação de serviços selecionada neste dia."}), 404
 
-        # ... (Busca de agendamentos existentes - sem mudanças) ...
         response_appts = supabase.table('agendamentos')\
             .select('id, hora, servico')\
             .eq('empresa_id', empresa_id)\
@@ -231,9 +221,8 @@ def get_available_slots():
         existing_appointments = response_appts.data if response_appts.data else []
         app.logger.info(f"Total de agendamentos encontrados na data {data_str}: {len(existing_appointments)}")
 
-        # ---> MODIFICADO: Calcula intervalos ocupados relevantes para a FUNÇÃO REQUERIDA <---
         role_specific_busy_intervals: List[Dict[str, datetime]] = []
-        appt_service_details_cache: Dict[str, Dict[str, Any]] = {} # Cache para detalhes de serviços existentes
+        appt_service_details_cache: Dict[str, Dict[str, Any]] = {}
         processed_appts_count = 0
         relevant_appts_count = 0
 
@@ -247,7 +236,6 @@ def get_available_slots():
                 app.logger.warning(f"Agendamento ID {appt_id} com dados incompletos (hora ou serviço). Ignorando.")
                 continue
 
-            # Busca detalhes do serviço do agendamento (usando cache)
             appt_svc_details = appt_service_details_cache.get(appt_service_name)
             if not appt_svc_details:
                 resp_appt_svc = supabase.table('servicos').select('tempo_servico, nome').eq('empresa_id', empresa_id).eq('nome', appt_service_name).maybe_single().execute()
@@ -257,10 +245,8 @@ def get_available_slots():
                 appt_svc_details = resp_appt_svc.data
                 appt_service_details_cache[appt_service_name] = appt_svc_details
 
-            # Verifica a função necessária para o serviço *deste* agendamento
             appt_existing_role = get_required_role_for_service(appt_svc_details.get('nome'))
 
-            # SÓ considera ocupado se a função for a mesma que a requerida para o novo agendamento
             if appt_existing_role == required_role:
                 relevant_appts_count += 1
                 try:
@@ -281,7 +267,6 @@ def get_available_slots():
 
         app.logger.info(f"Total de agendamentos processados: {processed_appts_count}. Agendamentos relevantes para '{required_role}': {relevant_appts_count}. Intervalos ocupados para '{required_role}': {len(role_specific_busy_intervals)}")
 
-        # ---> MODIFICADO: Calcula slots usando DURAÇÃO TOTAL e intervalos da FUNÇÃO <---
         available_slots: List[str] = []
         interval_minutes = 15
 
@@ -293,23 +278,19 @@ def get_available_slots():
                 app.logger.error(f"Erro fatal ao combinar data/hora para o intervalo {start_op_time}-{end_op_time}. Pulando intervalo.")
                 continue
 
-            # Usa a duração TOTAL
             last_possible_start_dt = interval_end_dt - timedelta(minutes=total_service_duration_minutes)
             current_potential_dt = interval_start_dt
 
             app.logger.info(f"Verificando slots no intervalo {interval_start_dt.time()} - {interval_end_dt.time()} (duração: {total_service_duration_minutes} min, último início: {last_possible_start_dt.time()})")
 
             while current_potential_dt <= last_possible_start_dt:
-                # Usa a duração TOTAL
                 potential_end_dt = current_potential_dt + timedelta(minutes=total_service_duration_minutes)
 
-                # Verifica sobreposição com intervalos da FUNÇÃO REQUERIDA
                 overlapping_count = 0
-                for busy in role_specific_busy_intervals: # <--- Usa os intervalos específicos da função
+                for busy in role_specific_busy_intervals:
                     if current_potential_dt < busy['end'] and potential_end_dt > busy['start']:
                         overlapping_count += 1
 
-                # Compara com a quantidade de staff DA FUNÇÃO REQUERIDA
                 if overlapping_count < available_staff_count:
                     available_slots.append(current_potential_dt.strftime('%H:%M'))
 
@@ -327,13 +308,11 @@ def get_available_slots():
         return jsonify({"message": "Ocorreu um erro interno inesperado. Tente novamente mais tarde."}), 500
 
 
-# Rota de health check (mantida)
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "ok"}), 200
 
 if __name__ == '__main__':
-    # Configuração para rodar localmente ou em produção (Vercel/similar)
     port = int(os.environ.get("PORT", 5000))
     debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == 'true'
     app.logger.info(f"Iniciando servidor Flask na porta {port} com debug={debug_mode}")
