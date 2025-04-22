@@ -1,0 +1,11 @@
+# .gitignore
+
+# Ignorar o arquivo de segredos
+.env
+
+# Ignorar a pasta do ambiente virtual
+venv/
+
+# Ignorar arquivos temporários do Python
+__pycache__/
+*.pyc
