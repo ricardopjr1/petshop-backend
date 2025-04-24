@@ -1,11 +1,10 @@
-# --- START OF FILE app.py (CORS ATUALIZADO) ---
-
+# --- START OF FILE app.py ---
 
 import os
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from supabase import create_client, Client
-from datetime import datetime, time, timedelta, date
+from datetime import datetime, time, timedelta, date # Added datetime
 from flask_cors import CORS
 from typing import List, Tuple, Dict, Any
 import logging
@@ -92,7 +91,7 @@ def get_required_role_for_service(service_name: str) -> str | None:
     elif 'banho' in service_name_lower or 'hidratação' in service_name_lower or 'pelo' in service_name_lower: # Ampliado
          return 'Banhista'
     app.logger.warning(f"Não foi possível determinar a função para o serviço '{service_name}'. Assumindo 'Banhista'.")
-    return 'Banhista'
+    return 'Banhista' # Default to Banhista if unsure
 
 def get_required_role_for_multiple_services(service_names: List[str]) -> str:
     """Determina a função MAIS EXIGENTE necessária para uma lista de serviços."""
@@ -112,7 +111,8 @@ def get_required_role_for_multiple_services(service_names: List[str]) -> str:
 def get_available_slots():
     """
     Busca e retorna os horários disponíveis para UM ou MÚLTIPLOS serviços
-    (identificados por UUIDs como strings) em uma data específica.
+    (identificados por UUIDs como strings) em uma data específica,
+    filtrando horários passados se a data for hoje.
     """
     try:
         app.logger.info(f"Recebida requisição GET para /api/horarios-disponiveis de {request.origin}")
@@ -146,9 +146,25 @@ def get_available_slots():
             app.logger.error(f"Erro 400: Formato de data inválido '{data_str}'.")
             return jsonify({"message": "Formato de data inválido. Use YYYY-MM-DD."}), 400
 
-        if selected_date < date.today():
+        # --- AJUSTE: Obter data e hora atuais ---
+        now_dt = datetime.now()
+        today_date = now_dt.date()
+        current_time = now_dt.time()
+        is_today = (selected_date == today_date)
+        # --- FIM AJUSTE ---
+
+        if selected_date < today_date:
              app.logger.warning(f"Tentativa de agendamento para data passada: {selected_date}")
+             # Mensagem já existente cobre isso.
              return jsonify({"message": "Não é possível agendar para datas passadas."}), 400
+
+        # --- AJUSTE: Log informando se a filtragem por hora atual será aplicada ---
+        if is_today:
+            app.logger.info(f"Data selecionada ({selected_date}) é hoje. Horários anteriores a {current_time.strftime('%H:%M:%S')} serão filtrados.")
+        else:
+            app.logger.info(f"Data selecionada ({selected_date}) é futura. Não haverá filtragem por hora atual.")
+        # --- FIM AJUSTE ---
+
 
         app.logger.info(f"Buscando horários para Empresa: {empresa_id}, Data: {selected_date}, Serviços IDs: {servico_ids_list}")
 
@@ -287,22 +303,34 @@ def get_available_slots():
             app.logger.info(f"Verificando slots no intervalo {interval_start_dt.time()} - {interval_end_dt.time()} (duração: {total_service_duration_minutes} min, último início: {last_possible_start_dt.time()})")
 
             while current_potential_dt <= last_possible_start_dt:
+                # --- AJUSTE: Checar se o horário potencial já passou (APENAS SE FOR HOJE) ---
+                if is_today and current_potential_dt.time() <= current_time:
+                    # Log apenas na primeira vez ou com menos frequência se for muito verboso
+                    # app.logger.debug(f"Pulando slot {current_potential_dt.strftime('%H:%M')} por ser anterior ou igual ao horário atual ({current_time.strftime('%H:%M:%S')}).")
+                    current_potential_dt += timedelta(minutes=interval_minutes)
+                    continue # Pula para a próxima iteração do while
+                # --- FIM AJUSTE ---
+
                 potential_end_dt = current_potential_dt + timedelta(minutes=total_service_duration_minutes)
 
                 overlapping_count = 0
                 for busy in role_specific_busy_intervals:
+                    # Verifica sobreposição: O potencial começa antes do fim do ocupado E o potencial termina depois do início do ocupado
                     if current_potential_dt < busy['end'] and potential_end_dt > busy['start']:
                         overlapping_count += 1
 
                 if overlapping_count < available_staff_count:
+                    # Se não há profissionais suficientes ocupados naquele horário, o slot está disponível
                     available_slots.append(current_potential_dt.strftime('%H:%M'))
+                    # app.logger.debug(f"Slot {current_potential_dt.strftime('%H:%M')} adicionado. Ocupação: {overlapping_count}/{available_staff_count}")
 
                 current_potential_dt += timedelta(minutes=interval_minutes)
 
+        # A lista já contém apenas slots futuros se is_today for True, devido ao ajuste no loop
         unique_available_slots = sorted(list(set(available_slots)))
 
         app.logger.info(f"Total de horários disponíveis únicos calculados para '{required_role}' (duração {total_service_duration_minutes} min) em {selected_date}: {len(unique_available_slots)}")
-        app.logger.info(f"Slots calculados: {unique_available_slots}")
+        app.logger.info(f"Slots calculados (após filtros): {unique_available_slots}") # Log final dos slots
 
         return jsonify(unique_available_slots)
 
