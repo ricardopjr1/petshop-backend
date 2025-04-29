@@ -95,20 +95,20 @@ def get_required_role_for_service(service_name: str) -> str | None:
     # ... (igual a antes) ...
     if not service_name: return None
     service_name_lower = service_name.lower()
-    if 'tosa' in service_name_lower: return 'Groomer'
-    elif any(term in service_name_lower for term in ['banho', 'hidratação', 'pelo']): return 'Groomer'
-    app.logger.warning(f"Função não determinada para '{service_name}'. Assumindo 'Groomer'.")
-    return 'Groomer'
+    if 'tosa' in service_name_lower: return 'Banho e Tosa'
+    elif any(term in service_name_lower for term in ['banho', 'hidratação', 'pelo']): return 'Banho e Tosa'
+    app.logger.warning(f"Função não determinada para '{service_name}'. Assumindo 'Banho e Tosa'.")
+    return 'Banho e Tosa'
 
 def get_required_role_for_multiple_services(service_names: List[str]) -> str:
     """Determina função MAIS EXIGENTE para múltiplos serviços."""
     # ... (igual a antes) ...
-    if not service_names: return 'Groomer'
+    if not service_names: return 'Banho e Tosa'
     if any('tosa' in name.lower() for name in service_names):
-         app.logger.debug("Função requerida para bloco: Groomer (devido a Tosa)")
-         return 'Groomer'
-    app.logger.debug("Função requerida para bloco: Groomer")
-    return 'Groomer'
+         app.logger.debug("Função requerida para bloco: Banho e Tosa (devido a Tosa)")
+         return 'Banho e Tosa'
+    app.logger.debug("Função requerida para bloco: Banho e Tosa")
+    return 'Banho e Tosa'
 
 
 @app.route('/api/horarios-disponiveis', methods=['GET'])
